@@ -3,11 +3,17 @@
 论文：[TactileReflex: Closed-Loop Tactile Reflex Control for Safe Deformable Object Manipulation via Vision-Based Tactile Sensing](https://arxiv.org/abs/2605.23568)
 项目主页：[shayfeng.github.io/TactileReflex](https://shayfeng.github.io/TactileReflex/)
 
+This repository includes subsequent improvements and sensor-specific extensions beyond the implementation evaluated in the IROS 2026 paper. Implementation details and calibrated thresholds may therefore differ from those reported in the paper.
+
 本目录包含论文实验使用的 MC-TAC 控制器、约 25 Hz 的优化版本，以及 DM-TAC 和 Xense 后端：
 
 - `tactile_exp_v1.py`：双相机触觉计算、启动基线标定、三通道 Reflex Controller、实时显示和 `metrics.csv/config.json` 记录。
 - `tactile_exp_v2.py`：优化后的 MC-TAC Reflex Controller（异步相机线程 + 左右并行计算，目标约 25 Hz），输出事件增强版 CSV。
 - `calibrate_thresholds.py`：从 E1/E2/E3 试验 CSV 计算阈值候选。
+
+运行标定脚本会自动计算传感器相关阈值；`fn_stop` 是选定控制配置中的统一常量，由 `--fn_stop` 一并写入结果。输出仍应经过独立的可恢复实机试验确认。
+
+MC-TAC 的 `Sy_raw` 按论文式（6）计算为接触区域内 `median(abs(v_y))`；二维光流幅值只用于可视化。修改这一统计量后，旧 CSV 中的 `Sy` 分布和 `sy_th`/`sy_quiet` 不再直接适用，应重新执行 E1–E3 标定。
 
 ## 1. 论文配置与适用范围
 
@@ -15,7 +21,7 @@
 
 代码按“先读左相机，再读右相机”的顺序采集一对图像。若使用硬件触发同步，需要替换采集层并重新验证 `Sy`、CoP 和阈值。
 
-更换传感器/胶体、分辨率或裁剪、曝光/白平衡/光源、安装预紧、相机位置、物体材料或载荷后，重新执行步骤 2–6。`exp_v1` 和 `exp_v2` 使用了不同的采集时序/ROI，阈值分别验证。
+`fn_stop` 使用选定控制配置中的固定接触/闭合停止常量；其余由传感器信号决定的阈值仍需随工况复核。更换传感器/胶体、分辨率或裁剪、曝光/白平衡/光源、安装预紧、相机位置、物体材料或载荷后，重新执行步骤 2–6。`exp_v1` 和 `exp_v2` 使用了不同的采集时序/ROI，阈值分别验证。
 
 ## 2. 安装
 
@@ -94,6 +100,7 @@ python calibrate_thresholds.py \
   --static output/E1_static_soft_01/metrics.csv \
   --slip output/E2_slip_soft_01/metrics.csv \
   --unload output/E3_unload_soft_01/metrics.csv \
+  --fn_stop 1.3 \
   --out output/soft_threshold_candidates.json
 cat output/soft_threshold_candidates.json
 ```
@@ -101,10 +108,10 @@ cat output/soft_threshold_candidates.json
 默认只使用 `state == HOLDING`。三类输入分别对应静态保持、滑移和减载：
 
 - `sy_quiet`：稳定保持期 **raw `Sy_raw_max` 的 P95 + 加性余量**；运行时 release 比较 EMA `Sy_max`。余量可用 `--sy_quiet_margin` 调整。
-- `sy_th`：静态 raw `Sy` P95 与受控滑移事件低分位数之间的候选中点；只有检测到 `slip_on` 边沿才会输出。
+- `sy_th`：满足论文约束 `P99.9(静态 raw Sy) ≤ sy_th ≤ 最弱观测滑移` 的候选中点；分布重叠时输出 `null`。滑移记录应包含受控事件边沿，不能把普通静态帧冒充滑移。
 - `cop_dec_th`：静态 CoP 漂移与受控减载事件的候选分界；必须检查负向方向和安静剪切门控。
 - `fn_protect_limit`：稳定保持期 **raw `Fn_raw_max` 的 P99.9 × (1+余量)**；运行时保护比较 EMA `Fn_max`。余量可用 `--fn_protect_margin` 调整。
-- `fn_stop`：不从 CSV 自动决定；它使用两侧 EMA `Fn` 的最小值，应通过低 effort、带支撑的接触测试确定。
+- `fn_stop`：统一的控制器接触/闭合停止常量（软杯历史值 `1.3`，硬杯历史值 `5.5`），脚本通过 `--fn_stop` 写入输出配置；运行时使用两侧 raw `Fn` 的最小值。运行标定脚本时用 `--fn_stop` 选择对应配置。
 
 若 `sy_th` 或 `cop_dec_th` 为 `null`，重新采集对应试验。若静态噪声与滑移分布重叠，先改善成像、接触掩膜或采样。
 
@@ -150,7 +157,7 @@ python tactile_exp_v2.py --headless \
   --out_csv output/exp_v2_reflex_01.csv
 ```
 
-使用 `--auto_start` 才会在标定后自动闭合；GUI 模式按 `s` 开始、`r` 重新标定、`q` 退出。exp_v2 CSV 记录 `Fn_raw_*`、`Sy_raw_*`、`slip_on/off`、`release_on`、`protect_on` 和 `action_state`，可用于阈值分析。`Sy_raw` 是相邻已处理帧之间的光流，结合 `frame_ms` 读取。
+使用 `--auto_start` 才会在标定后自动闭合；GUI 模式按 `s` 开始、`r` 重新标定、`q` 退出。exp_v2 CSV 记录 `Fn_raw_*`、`Sy_raw_*`、`slip_on/off`、`release_on`、`protect_on` 和 `action_state`，可用于阈值分析。`Sy_raw` 是接触区域内相邻已处理帧竖直光流的 `median(abs(v_y))`，结合 `frame_ms` 读取。exp_v2 使用“只保留最新帧”的采集策略，可能跳过相机中间帧；因此 `frame_ms` 表示控制循环间隔，不保证每行都是新的硬件同步双帧。需要严格逐帧分析时，应在采集线程中加入帧序号和时间戳。
 
 ## 4. 控制逻辑与参数
 
@@ -158,19 +165,21 @@ python tactile_exp_v2.py --headless \
 2. **Release（R3）**：R2 未触发，双侧接触，`delta_cop_y < cop_dec_th` 且 EMA `Sy_max < sy_quiet` 时降低 effort，并撤销额外收紧的位置。R2/R3 使用 `if/elif`，同周期互斥。
 3. **Protect（R1）**：随后独立检查 EMA `Fn_max > fn_protect_limit`，执行减力和放松，可覆盖前两个动作。该通道配合硬件急停使用。
 
-`Fn` 是图像代理量，不是牛顿；effort 是发送给 Piper 的命令，不是测得的夹持力。raw `Sy` 单位是像素/相邻处理帧，会随图像尺度和实际帧间隔变化。保护存在 EMA 和执行延迟。
+`Fn` 是图像代理量，不是牛顿；effort 是发送给 Piper 的命令，不是测得的夹持力。`fn_stop` 使用两侧 raw `Fn` 的最小值；保护使用 EMA `Fn_max`，两者不要混用。raw `Sy` 单位是像素/相邻处理帧，会随图像尺度和实际帧间隔变化。保护存在 EMA 和执行延迟。
 
 论文软杯/硬杯历史值：
 
 | CLI 参数 | 软杯 | 硬杯 | 运行时信号 |
 |---|---:|---:|---|
-| `--fn_stop` | 1.3 | 5.5 | 两侧 EMA `Fn` 的最小值 |
-| `--sy_th` | 0.20 | 0.20 | 接触侧 raw `Sy` |
-| `--sy_quiet` | 0.12 | 0.10 | EMA `Sy_max` |
+| `--fn_stop` | 1.3 | 5.5 | 两侧 raw `Fn` 的最小值 |
+| `--sy_th` | 0.20* | 0.20* | 接触侧 raw `Sy = median(abs(v_y))` |
+| `--sy_quiet` | 0.12* | 0.10* | EMA `Sy_max` |
 | `--cop_dec_th` | -10.0 | -3.5 | CoP 相对参考，px |
 | `--fn_protect_limit` | 45 | 100 | EMA `Fn_max` |
 | `gamma` | 1.5 | 1.5 | 源码固定 |
 | `ema_alpha` | 0.3 | 0.3 | 源码固定 |
+
+带 `*` 的 `sy_th` 和 `sy_quiet` 是原论文工况下的历史值；切换到当前 `abs(v_y)` 实现后，必须用新的 E1–E3 CSV 重新确认。
 
 还需按工况复核 `min_contact_px=200`、5×5 morphology、Farneback 参数、`gamma`、EMA、参考跟踪率（背景 0.02、release 0.3）、控制增量、行程和实际频率。改变其中任一项后重新做 E1–E3。
 

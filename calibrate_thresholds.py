@@ -98,6 +98,8 @@ def main() -> int:
                     help="additive starting margin above static raw Sy P95 (default: 0.02)")
     ap.add_argument("--fn_protect_margin", type=float, default=0.20,
                     help="relative starting margin above static raw Fn P99.9 (default: 0.20)")
+    ap.add_argument("--fn_stop", type=float, default=1.3,
+                    help="fixed contact/closing-stop constant to include in the output (default: 1.3)")
     ap.add_argument("--out", default="threshold_candidates.json",
                     help="JSON output path")
     args = ap.parse_args()
@@ -134,8 +136,15 @@ def main() -> int:
     # Paper calibration uses raw Sy P95 for the quiet-shear ceiling.  The
     # controller later compares EMA Sy_max against this candidate.
     static_sy_p95 = percentile(static_sy_raw, 95)
-    slip_low = percentile(slip_observed, 10)
-    sy_candidate = (static_sy_p95 + slip_low) / 2 if slip_edge and static_sy_p95 is not None and slip_low is not None and slip_low > static_sy_p95 else None
+    # The paper's slip constraint uses the high static-noise ceiling and the
+    # weakest observed slip, rather than a P95/P10 heuristic.  Keep the
+    # candidate null when the two distributions do not separate.
+    static_sy_p999 = percentile(static_sy_raw, 99.9)
+    slip_weakest = min(slip_observed) if slip_observed else None
+    sy_candidate = ((static_sy_p999 + slip_weakest) / 2
+                    if slip_edge and static_sy_p999 is not None
+                    and slip_weakest is not None
+                    and slip_weakest > static_sy_p999 else None)
 
     static_cop_low = percentile(static_cop, 1)
     unload_mid = percentile(unload_observed, 50)
@@ -167,11 +176,16 @@ def main() -> int:
         "candidates": {
             "sy_quiet": (static_sy_p95 + args.sy_quiet_margin) if static_sy_p95 is not None else None,
             "sy_quiet_raw_p95": static_sy_p95,
+            "sy_static_raw_p999": static_sy_p999,
+            "sy_slip_weakest": slip_weakest,
             "sy_th": sy_candidate,
             "cop_dec_th": cop_candidate,
             "fn_protect_limit": fn_candidate,
             "fn_protect_raw_p999": fn_p999,
-            "fn_stop": None,
+            # fn_stop is a configured controller constant, not a statistic
+            # estimated from the static CSV.  Keep it in the generated file
+            # so the output is directly usable for a selected material/profile.
+            "fn_stop": args.fn_stop,
         },
         "margins": {
             "sy_quiet_additive": args.sy_quiet_margin,
@@ -179,10 +193,10 @@ def main() -> int:
         },
         "warnings": [
             "Candidates require independent physical validation and are not safety certification.",
-            "fn_stop cannot be inferred from a static CSV alone; validate low-effort contact and both-side contact manually.",
+            "fn_stop is a fixed controller constant supplied by --fn_stop; select the appropriate profile and verify both-side contact during a low-effort test.",
             "sy_quiet is static raw Sy P95 plus the requested additive starting margin; runtime release compares EMA Sy_max.",
             "fn_protect_limit is static raw Fn P99.9 plus the requested relative margin; runtime protection compares EMA Fn_max. Validate deformation and protection latency.",
-            "sy_th and cop_dec_th are only estimated when controlled event CSVs contain separated distributions.",
+            "sy_th uses static raw Sy P99.9 <= threshold <= weakest observed slip; it remains null when the distributions overlap.",
             "If event_rows_used is false, the supplied slip/unload log did not contain edge events; inspect the trial protocol before using candidates.",
         ],
     }

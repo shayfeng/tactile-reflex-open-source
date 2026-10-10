@@ -192,7 +192,7 @@ class TactileMetricsComputer:
     """
     Single tactile sensor metrics computer (V3 robust).
       Fn = Σ ΔI^γ / (H×W)   over contact mask
-      Sy_raw = median(|flow_prev→curr|) over contact mask
+      Sy_raw = median(|v_y|) over contact mask; v_y is Farneback's vertical component
       CoP = weighted centroid
     """
 
@@ -318,9 +318,11 @@ class TactileMetricsComputer:
                 self.prev_gray, curr_gray, None, **self.flow_params
             )
             fx, fy = flow[..., 0], flow[..., 1]
+            # Paper Eq. (6): Sy is the median absolute vertical flow
+            # component.  Keep the 2-D magnitude for visualization only.
             flow_mag = np.sqrt(fx**2 + fy**2)
             if has_contact:
-                Sy_raw = float(np.median(flow_mag[mask]))
+                Sy_raw = float(np.median(np.abs(fy[mask])))
                 sy_vec[0] = float(np.median(fx[mask]))
                 sy_vec[1] = float(np.median(fy[mask]))
 
@@ -353,8 +355,13 @@ class TactileMetricsComputer:
             'Sy_raw': Sy_raw,
             'Sy':     float(self._ema['Sy']),
             'Sy_vec': sy_vec,
-            'CoP_x':  float(self._ema['CoP_x']),
-            'CoP_y':  float(self._ema['CoP_y']),
+            # The paper defines CoP directly from the current weighted mask.
+            # Keep the EMA internally for display/diagnostics, but expose the
+            # raw centroid for the release controller and CSV semantics.
+            'CoP_x':  CoP_x_raw,
+            'CoP_y':  CoP_y_raw,
+            'CoP_x_ema': float(self._ema['CoP_x']),
+            'CoP_y_ema': float(self._ema['CoP_y']),
             'Area':   contact_px,
             'contact': bool(has_contact),
             'tau':    float(self.tau),
@@ -524,7 +531,7 @@ class DualTactileReflexController:
             "Fn_L", "Fn_R", "Fn_min", "Fn_max",
             "Sy_L", "Sy_R", "Sy_max",
             # tactile (raw)
-            "Fn_raw_L", "Fn_raw_R", "Fn_raw_max",
+            "Fn_raw_L", "Fn_raw_R", "Fn_raw_min", "Fn_raw_max",
             "Sy_raw_L", "Sy_raw_R", "Sy_raw_max",
             "CoP_x_L", "CoP_y_L", "CoP_x_R", "CoP_y_R", "cop_y_avg",
             "Area_L", "Area_R", "contact_L", "contact_R",
@@ -645,6 +652,7 @@ class DualTactileReflexController:
 
         # Aggregates (aligned with v2)
         Fn_min = float(min(res_l["Fn"], res_r["Fn"]))
+        Fn_raw_min = float(min(res_l["Fn_raw"], res_r["Fn_raw"]))
         Fn_max = float(max(res_l["Fn"], res_r["Fn"]))
         Sy_max = float(max(res_l["Sy"], res_r["Sy"]))
         Sy_raw_max = float(max(res_l["Sy_raw"], res_r["Sy_raw"]))
@@ -670,9 +678,9 @@ class DualTactileReflexController:
         #  State machine (aligned with v2)
         # ============================================================
         if self.state == self.STATE_CLOSING:
-            if Fn_min >= self.params.fn_stop_threshold:
+            if Fn_raw_min >= self.params.fn_stop_threshold:
                 self.state = self.STATE_HOLDING
-                print(f"🛑 Grasp stopped at Fn_min={Fn_min:.3f} | pos={self.current_pos/1000:.1f}mm | effort={self.current_effort}")
+                print(f"🛑 Grasp stopped at Fn_raw_min={Fn_raw_min:.3f} | pos={self.current_pos/1000:.1f}mm | effort={self.current_effort}")
             elif self.current_pos <= self.params.min_stroke_um:
                 self.state = self.STATE_HOLDING
                 print(f"⚠️ stroke limit reached -> HOLDING")
@@ -811,6 +819,7 @@ class DualTactileReflexController:
 
             "Fn_raw_L": f"{res_l['Fn_raw']:.6f}",
             "Fn_raw_R": f"{res_r['Fn_raw']:.6f}",
+            "Fn_raw_min": f"{Fn_raw_min:.6f}",
             "Fn_raw_max": f"{max(res_l['Fn_raw'], res_r['Fn_raw']):.6f}",
 
             "Sy_raw_L": f"{res_l['Sy_raw']:.6f}",
